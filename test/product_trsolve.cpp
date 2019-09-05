@@ -71,9 +71,22 @@ template<typename Scalar,int Size, int Cols> void trsolve(int size=Size,int cols
   int c = internal::random<int>(0,cols-1);
   VERIFY_TRSM(rmLhs.template triangularView<Lower>(), rmRhs.col(c));
   VERIFY_TRSM(cmLhs.template triangularView<Lower>(), rmRhs.col(c));
+
+  if(Size==Dynamic)
+  {
+    cmLhs.resize(0,0);
+    cmRhs.resize(0,cmRhs.cols());
+    Matrix<Scalar,Size,Cols,colmajor> res = cmLhs.template triangularView<Lower>().solve(cmRhs);
+    VERIFY_IS_EQUAL(res.rows(),0);
+    VERIFY_IS_EQUAL(res.cols(),cmRhs.cols());
+    res = cmRhs;
+    cmLhs.template triangularView<Lower>().solveInPlace(res);
+    VERIFY_IS_EQUAL(res.rows(),0);
+    VERIFY_IS_EQUAL(res.cols(),cmRhs.cols());
+  }
 }
 
-void test_product_trsolve()
+EIGEN_DECLARE_TEST(product_trsolve)
 {
   for(int i = 0; i < g_repeat ; i++)
   {

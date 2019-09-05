@@ -49,7 +49,7 @@ if(EIGEN_ENABLE_LAPACK_TESTS)
                   INACTIVITY_TIMEOUT 15
                   TIMEOUT 240
                   STATUS download_status
-                  EXPECTED_MD5 5758ce55afcf79da98de8b9de1615ad5
+                  EXPECTED_MD5 ab5742640617e3221a873aba44bbdc93
                   SHOW_PROGRESS)
                   
     message(STATUS ${download_status})
@@ -136,6 +136,7 @@ if(EXISTS ${eigen_full_path_to_testing_lapack})
   add_subdirectory(testing/MATGEN)
   add_subdirectory(testing/LIN)
   add_subdirectory(testing/EIG)
+  cmake_policy(SET CMP0026 OLD)
   macro(add_lapack_test output input target)
     set(TEST_INPUT "${LAPACK_SOURCE_DIR}/testing/${input}")
     set(TEST_OUTPUT "${LAPACK_BINARY_DIR}/testing/${output}")

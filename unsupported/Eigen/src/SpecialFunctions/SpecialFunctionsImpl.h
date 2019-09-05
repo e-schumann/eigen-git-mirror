@@ -38,60 +38,72 @@ namespace internal {
 
 namespace cephes {
 
-/* polevl (modified for Eigen)
+/* chbevl (modified for Eigen)
  *
- *      Evaluate polynomial
+ *     Evaluate Chebyshev series
  *
  *
  *
  * SYNOPSIS:
  *
  * int N;
- * Scalar x, y, coef[N+1];
+ * Scalar x, y, coef[N], chebevl();
  *
- * y = polevl<decltype(x), N>( x, coef);
+ * y = chbevl( x, coef, N );
  *
  *
  *
  * DESCRIPTION:
  *
- * Evaluates polynomial of degree N:
+ * Evaluates the series
  *
- *                     2          N
- * y  =  C  + C x + C x  +...+ C x
- *        0    1     2          N
+ *        N-1
+ *         - '
+ *  y  =   >   coef[i] T (x/2)
+ *         -            i
+ *        i=0
  *
- * Coefficients are stored in reverse order:
+ * of Chebyshev polynomials Ti at argument x/2.
  *
- * coef[0] = C  , ..., coef[N] = C  .
- *            N                   0
+ * Coefficients are stored in reverse order, i.e. the zero
+ * order term is last in the array.  Note N is the number of
+ * coefficients, not the order.
  *
- *  The function p1evl() assumes that coef[N] = 1.0 and is
- * omitted from the array.  Its calling arguments are
- * otherwise the same as polevl().
+ * If coefficients are for the interval a to b, x must
+ * have been transformed to x -> 2(2x - b - a)/(b-a) before
+ * entering the routine.  This maps x from (a, b) to (-1, 1),
+ * over which the Chebyshev polynomials are defined.
+ *
+ * If the coefficients are for the inverted interval, in
+ * which (a, b) is mapped to (1/b, 1/a), the transformation
+ * required is x -> 2(2ab/x - b - a)/(b-a).  If b is infinity,
+ * this becomes x -> 4a/x - 1.
  *
  *
- * The Eigen implementation is templatized.  For best speed, store
- * coef as a const array (constexpr), e.g.
  *
- * const double coef[] = {1.0, 2.0, 3.0, ...};
+ * SPEED:
+ *
+ * Taking advantage of the recurrence properties of the
+ * Chebyshev polynomials, the routine requires one more
+ * addition per loop than evaluating a nested polynomial of
+ * the same degree.
  *
  */
 template <typename Scalar, int N>
-struct polevl {
+struct chebevl {
   EIGEN_DEVICE_FUNC
-  static EIGEN_STRONG_INLINE Scalar run(const Scalar x, const Scalar coef[]) {
-    EIGEN_STATIC_ASSERT((N > 0), YOU_MADE_A_PROGRAMMING_MISTAKE);
+  static EIGEN_STRONG_INLINE Scalar run(Scalar x, const Scalar coef[]) {
+    Scalar b0 = coef[0];
+    Scalar b1 = 0;
+    Scalar b2;
 
-    return polevl<Scalar, N - 1>::run(x, coef) * x + coef[N];
-  }
-};
+    for (int i = 1; i < N; i++) {
+      b2 = b1;
+      b1 = b0;
+      b0 = x * b1 - b2 + coef[i];
+    }
 
-template <typename Scalar>
-struct polevl<Scalar, 0> {
-  EIGEN_DEVICE_FUNC
-  static EIGEN_STRONG_INLINE Scalar run(const Scalar, const Scalar coef[]) {
-    return coef[0];
+    return Scalar(0.5) * (b0 - b2);
   }
 };
 
@@ -121,9 +133,11 @@ template <>
 struct lgamma_impl<float> {
   EIGEN_DEVICE_FUNC
   static EIGEN_STRONG_INLINE float run(float x) {
-#if !defined(EIGEN_CUDA_ARCH) && (defined(_BSD_SOURCE) || defined(_SVID_SOURCE)) && !defined(__APPLE__)
+#if !defined(EIGEN_GPU_COMPILE_PHASE) && (defined(_BSD_SOURCE) || defined(_SVID_SOURCE)) && !defined(__APPLE__)
     int dummy;
     return ::lgammaf_r(x, &dummy);
+#elif defined(SYCL_DEVICE_ONLY)
+    return cl::sycl::lgamma(x);
 #else
     return ::lgammaf(x);
 #endif
@@ -134,9 +148,11 @@ template <>
 struct lgamma_impl<double> {
   EIGEN_DEVICE_FUNC
   static EIGEN_STRONG_INLINE double run(double x) {
-#if !defined(EIGEN_CUDA_ARCH) && (defined(_BSD_SOURCE) || defined(_SVID_SOURCE)) && !defined(__APPLE__)
+#if !defined(EIGEN_GPU_COMPILE_PHASE) && (defined(_BSD_SOURCE) || defined(_SVID_SOURCE)) && !defined(__APPLE__)
     int dummy;
     return ::lgamma_r(x, &dummy);
+#elif defined(SYCL_DEVICE_ONLY)
+    return cl::sycl::lgamma(x);
 #else
     return ::lgamma(x);
 #endif
@@ -191,7 +207,7 @@ struct digamma_impl_maybe_poly<float> {
     float z;
     if (s < 1.0e8f) {
       z = 1.0f / (s * s);
-      return z * cephes::polevl<float, 3>::run(z, A);
+      return z * internal::ppolevl<float, 3>::run(z, A);
     } else return 0.0f;
   }
 };
@@ -213,7 +229,7 @@ struct digamma_impl_maybe_poly<double> {
     double z;
     if (s < 1.0e17) {
       z = 1.0 / (s * s);
-      return z * cephes::polevl<double, 6>::run(z, A);
+      return z * internal::ppolevl<double, 6>::run(z, A);
     }
     else return 0.0;
   }
@@ -354,13 +370,25 @@ struct erf_retval {
 template <>
 struct erf_impl<float> {
   EIGEN_DEVICE_FUNC
-  static EIGEN_STRONG_INLINE float run(float x) { return ::erff(x); }
+  static EIGEN_STRONG_INLINE float run(float x) {
+#if defined(SYCL_DEVICE_ONLY)
+    return cl::sycl::erf(x);
+#else
+    return ::erff(x);
+#endif
+  }
 };
 
 template <>
 struct erf_impl<double> {
   EIGEN_DEVICE_FUNC
-  static EIGEN_STRONG_INLINE double run(double x) { return ::erf(x); }
+  static EIGEN_STRONG_INLINE double run(double x) {
+#if defined(SYCL_DEVICE_ONLY)
+    return cl::sycl::erf(x);
+#else
+    return ::erf(x);
+#endif
+  }
 };
 #endif  // EIGEN_HAS_C99_MATH
 
@@ -387,15 +415,267 @@ struct erfc_retval {
 template <>
 struct erfc_impl<float> {
   EIGEN_DEVICE_FUNC
-  static EIGEN_STRONG_INLINE float run(const float x) { return ::erfcf(x); }
+  static EIGEN_STRONG_INLINE float run(const float x) {
+#if defined(SYCL_DEVICE_ONLY)
+    return cl::sycl::erfc(x);
+#else
+    return ::erfcf(x);
+#endif
+  }
 };
 
 template <>
 struct erfc_impl<double> {
   EIGEN_DEVICE_FUNC
-  static EIGEN_STRONG_INLINE double run(const double x) { return ::erfc(x); }
+  static EIGEN_STRONG_INLINE double run(const double x) {
+#if defined(SYCL_DEVICE_ONLY)
+    return cl::sycl::erfc(x);
+#else
+    return ::erfc(x);
+#endif
+  }
 };
 #endif  // EIGEN_HAS_C99_MATH
+
+
+/***************************************************************************
+* Implementation of ndtri.                                                 *
+****************************************************************************/
+
+/* Inverse of Normal distribution function (modified for Eigen).
+ *
+ *
+ * SYNOPSIS:
+ *
+ * double x, y, ndtri();
+ *
+ * x = ndtri( y );
+ *
+ *
+ *
+ * DESCRIPTION:
+ *
+ * Returns the argument, x, for which the area under the
+ * Gaussian probability density function (integrated from
+ * minus infinity to x) is equal to y.
+ *
+ *
+ * For small arguments 0 < y < exp(-2), the program computes
+ * z = sqrt( -2.0 * log(y) );  then the approximation is
+ * x = z - log(z)/z  - (1/z) P(1/z) / Q(1/z).
+ * There are two rational functions P/Q, one for 0 < y < exp(-32)
+ * and the other for y up to exp(-2).  For larger arguments,
+ * w = y - 0.5, and  x/sqrt(2pi) = w + w**3 R(w**2)/S(w**2)).
+ *
+ *
+ * ACCURACY:
+ *
+ *                      Relative error:
+ * arithmetic   domain        # trials      peak         rms
+ *    DEC      0.125, 1         5500       9.5e-17     2.1e-17
+ *    DEC      6e-39, 0.135     3500       5.7e-17     1.3e-17
+ *    IEEE     0.125, 1        20000       7.2e-16     1.3e-16
+ *    IEEE     3e-308, 0.135   50000       4.6e-16     9.8e-17
+ *
+ *
+ * ERROR MESSAGES:
+ *
+ *   message         condition    value returned
+ * ndtri domain       x <= 0        -MAXNUM
+ * ndtri domain       x >= 1         MAXNUM
+ *
+ */
+ /*
+   Cephes Math Library Release 2.2: June, 1992
+   Copyright 1985, 1987, 1992 by Stephen L. Moshier
+   Direct inquiries to 30 Frost Street, Cambridge, MA 02140
+ */
+
+
+// TODO: Add a cheaper approximation for float.
+
+
+template<typename T>
+EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE T flipsign(
+    const T& should_flipsign, const T& x) {
+  const T sign_mask = pset1<T>(-0.0);
+  T sign_bit = pand<T>(should_flipsign, sign_mask);
+  return pxor<T>(sign_bit, x);
+}
+
+template<>
+EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE double flipsign<double>(
+    const double& should_flipsign, const double& x) {
+  return should_flipsign == 0 ? x : -x;
+}
+
+template<>
+EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE float flipsign<float>(
+    const float& should_flipsign, const float& x) {
+  return should_flipsign == 0 ? x : -x;
+}
+
+// We split this computation in to two so that in the scalar path
+// only one branch is evaluated (due to our template specialization of pselect
+// being an if statement.)
+
+template <typename T, typename ScalarType>
+EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE T generic_ndtri_gt_exp_neg_two(const T& b) {
+  const ScalarType p0[] = {
+    ScalarType(-5.99633501014107895267e1),
+    ScalarType(9.80010754185999661536e1),
+    ScalarType(-5.66762857469070293439e1),
+    ScalarType(1.39312609387279679503e1),
+    ScalarType(-1.23916583867381258016e0)
+  };
+  const ScalarType q0[] = {
+    ScalarType(1.0),
+    ScalarType(1.95448858338141759834e0),
+    ScalarType(4.67627912898881538453e0),
+    ScalarType(8.63602421390890590575e1),
+    ScalarType(-2.25462687854119370527e2),
+    ScalarType(2.00260212380060660359e2),
+    ScalarType(-8.20372256168333339912e1),
+    ScalarType(1.59056225126211695515e1),
+    ScalarType(-1.18331621121330003142e0)
+  };
+  const T sqrt2pi = pset1<T>(ScalarType(2.50662827463100050242e0));
+  const T half = pset1<T>(ScalarType(0.5));
+  T c, c2, ndtri_gt_exp_neg_two;
+
+  c = psub(b, half);
+  c2 = pmul(c, c);
+  ndtri_gt_exp_neg_two = pmadd(c, pmul(
+      c2, pdiv(
+          internal::ppolevl<T, 4>::run(c2, p0),
+          internal::ppolevl<T, 8>::run(c2, q0))), c);
+  return pmul(ndtri_gt_exp_neg_two, sqrt2pi);
+}
+
+template <typename T, typename ScalarType>
+EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE T generic_ndtri_lt_exp_neg_two(
+    const T& b, const T& should_flipsign) {
+  /* Approximation for interval z = sqrt(-2 log a ) between 2 and 8
+   * i.e., a between exp(-2) = .135 and exp(-32) = 1.27e-14.
+   */
+  const ScalarType p1[] = {
+    ScalarType(4.05544892305962419923e0),
+    ScalarType(3.15251094599893866154e1),
+    ScalarType(5.71628192246421288162e1),
+    ScalarType(4.40805073893200834700e1),
+    ScalarType(1.46849561928858024014e1),
+    ScalarType(2.18663306850790267539e0),
+    ScalarType(-1.40256079171354495875e-1),
+    ScalarType(-3.50424626827848203418e-2),
+    ScalarType(-8.57456785154685413611e-4)
+  };
+  const ScalarType q1[] = {
+    ScalarType(1.0),
+    ScalarType(1.57799883256466749731e1),
+    ScalarType(4.53907635128879210584e1),
+    ScalarType(4.13172038254672030440e1),
+    ScalarType(1.50425385692907503408e1),
+    ScalarType(2.50464946208309415979e0),
+    ScalarType(-1.42182922854787788574e-1),
+    ScalarType(-3.80806407691578277194e-2),
+    ScalarType(-9.33259480895457427372e-4)
+  };
+  /* Approximation for interval z = sqrt(-2 log a ) between 8 and 64
+   * i.e., a between exp(-32) = 1.27e-14 and exp(-2048) = 3.67e-890.
+   */
+  const ScalarType p2[] = {
+    ScalarType(3.23774891776946035970e0),
+    ScalarType(6.91522889068984211695e0),
+    ScalarType(3.93881025292474443415e0),
+    ScalarType(1.33303460815807542389e0),
+    ScalarType(2.01485389549179081538e-1),
+    ScalarType(1.23716634817820021358e-2),
+    ScalarType(3.01581553508235416007e-4),
+    ScalarType(2.65806974686737550832e-6),
+    ScalarType(6.23974539184983293730e-9)
+  };
+  const ScalarType q2[] = {
+    ScalarType(1.0),
+    ScalarType(6.02427039364742014255e0),
+    ScalarType(3.67983563856160859403e0),
+    ScalarType(1.37702099489081330271e0),
+    ScalarType(2.16236993594496635890e-1),
+    ScalarType(1.34204006088543189037e-2),
+    ScalarType(3.28014464682127739104e-4),
+    ScalarType(2.89247864745380683936e-6),
+    ScalarType(6.79019408009981274425e-9)
+  };
+  const T eight = pset1<T>(ScalarType(8.0));
+  const T one = pset1<T>(ScalarType(1));
+  const T neg_two = pset1<T>(ScalarType(-2));
+  T x, x0, x1, z;
+
+  x = psqrt(pmul(neg_two, plog(b)));
+  x0 = psub(x, pdiv(plog(x), x));
+  z = one / x;
+  x1 = pmul(
+      z, pselect(
+          pcmp_lt(x, eight),
+          pdiv(internal::ppolevl<T, 8>::run(z, p1),
+               internal::ppolevl<T, 8>::run(z, q1)),
+          pdiv(internal::ppolevl<T, 8>::run(z, p2),
+               internal::ppolevl<T, 8>::run(z, q2))));
+  return flipsign(should_flipsign, psub(x0, x1));
+}
+
+template <typename T, typename ScalarType>
+T generic_ndtri(const T& a) {
+  const T maxnum = pset1<T>(NumTraits<ScalarType>::infinity());
+  const T neg_maxnum = pset1<T>(-NumTraits<ScalarType>::infinity());
+
+  const T zero = pset1<T>(ScalarType(0));
+  const T one = pset1<T>(ScalarType(1));
+  // exp(-2)
+  const T exp_neg_two = pset1<T>(ScalarType(0.13533528323661269189));
+  T b, ndtri, should_flipsign;
+
+  should_flipsign = pcmp_le(a, psub(one, exp_neg_two));
+  b = pselect(should_flipsign, a, psub(one, a));
+
+  ndtri = pselect(
+      pcmp_lt(exp_neg_two, b),
+      generic_ndtri_gt_exp_neg_two<T, ScalarType>(b),
+      generic_ndtri_lt_exp_neg_two<T, ScalarType>(b, should_flipsign));
+
+  return pselect(
+      pcmp_le(a, zero), neg_maxnum,
+      pselect(pcmp_le(one, a), maxnum, ndtri));
+}
+
+template <typename Scalar>
+struct ndtri_retval {
+  typedef Scalar type;
+};
+
+#if !EIGEN_HAS_C99_MATH
+
+template <typename Scalar>
+struct ndtri_impl {
+  EIGEN_DEVICE_FUNC
+  static EIGEN_STRONG_INLINE Scalar run(const Scalar) {
+    EIGEN_STATIC_ASSERT((internal::is_same<Scalar, Scalar>::value == false),
+                        THIS_TYPE_IS_NOT_SUPPORTED);
+    return Scalar(0);
+  }
+};
+
+# else
+
+template <typename Scalar>
+struct ndtri_impl {
+  EIGEN_DEVICE_FUNC
+  static EIGEN_STRONG_INLINE Scalar run(const Scalar x) {
+    return generic_ndtri<Scalar, Scalar>(x);
+  }
+};
+
+#endif  // EIGEN_HAS_C99_MATH
+
 
 /**************************************************************************************************************
  * Implementation of igammac (complemented incomplete gamma integral), based on Cephes but requires C++11/C99 *
@@ -452,6 +732,199 @@ struct cephes_helper<double> {
   }
 };
 
+enum IgammaComputationMode { VALUE, DERIVATIVE, SAMPLE_DERIVATIVE };
+
+template <typename Scalar, IgammaComputationMode mode>
+EIGEN_DEVICE_FUNC
+int igamma_num_iterations() {
+  /* Returns the maximum number of internal iterations for igamma computation.
+   */
+  if (mode == VALUE) {
+    return 2000;
+  }
+
+  if (internal::is_same<Scalar, float>::value) {
+    return 200;
+  } else if (internal::is_same<Scalar, double>::value) {
+    return 500;
+  } else {
+    return 2000;
+  }
+}
+
+template <typename Scalar, IgammaComputationMode mode>
+struct igammac_cf_impl {
+  /* Computes igamc(a, x) or derivative (depending on the mode)
+   * using the continued fraction expansion of the complementary
+   * incomplete Gamma function.
+   *
+   * Preconditions:
+   *   a > 0
+   *   x >= 1
+   *   x >= a
+   */
+  EIGEN_DEVICE_FUNC
+  static Scalar run(Scalar a, Scalar x) {
+    const Scalar zero = 0;
+    const Scalar one = 1;
+    const Scalar two = 2;
+    const Scalar machep = cephes_helper<Scalar>::machep();
+    const Scalar big = cephes_helper<Scalar>::big();
+    const Scalar biginv = cephes_helper<Scalar>::biginv();
+
+    if ((numext::isinf)(x)) {
+      return zero;
+    }
+
+    // continued fraction
+    Scalar y = one - a;
+    Scalar z = x + y + one;
+    Scalar c = zero;
+    Scalar pkm2 = one;
+    Scalar qkm2 = x;
+    Scalar pkm1 = x + one;
+    Scalar qkm1 = z * x;
+    Scalar ans = pkm1 / qkm1;
+
+    Scalar dpkm2_da = zero;
+    Scalar dqkm2_da = zero;
+    Scalar dpkm1_da = zero;
+    Scalar dqkm1_da = -x;
+    Scalar dans_da = (dpkm1_da - ans * dqkm1_da) / qkm1;
+
+    for (int i = 0; i < igamma_num_iterations<Scalar, mode>(); i++) {
+      c += one;
+      y += one;
+      z += two;
+
+      Scalar yc = y * c;
+      Scalar pk = pkm1 * z - pkm2 * yc;
+      Scalar qk = qkm1 * z - qkm2 * yc;
+
+      Scalar dpk_da = dpkm1_da * z - pkm1 - dpkm2_da * yc + pkm2 * c;
+      Scalar dqk_da = dqkm1_da * z - qkm1 - dqkm2_da * yc + qkm2 * c;
+
+      if (qk != zero) {
+        Scalar ans_prev = ans;
+        ans = pk / qk;
+
+        Scalar dans_da_prev = dans_da;
+        dans_da = (dpk_da - ans * dqk_da) / qk;
+
+        if (mode == VALUE) {
+          if (numext::abs(ans_prev - ans) <= machep * numext::abs(ans)) {
+            break;
+          }
+        } else {
+          if (numext::abs(dans_da - dans_da_prev) <= machep) {
+            break;
+          }
+        }
+      }
+
+      pkm2 = pkm1;
+      pkm1 = pk;
+      qkm2 = qkm1;
+      qkm1 = qk;
+
+      dpkm2_da = dpkm1_da;
+      dpkm1_da = dpk_da;
+      dqkm2_da = dqkm1_da;
+      dqkm1_da = dqk_da;
+
+      if (numext::abs(pk) > big) {
+        pkm2 *= biginv;
+        pkm1 *= biginv;
+        qkm2 *= biginv;
+        qkm1 *= biginv;
+
+        dpkm2_da *= biginv;
+        dpkm1_da *= biginv;
+        dqkm2_da *= biginv;
+        dqkm1_da *= biginv;
+      }
+    }
+
+    /* Compute  x**a * exp(-x) / gamma(a)  */
+    Scalar logax = a * numext::log(x) - x - lgamma_impl<Scalar>::run(a);
+    Scalar dlogax_da = numext::log(x) - digamma_impl<Scalar>::run(a);
+    Scalar ax = numext::exp(logax);
+    Scalar dax_da = ax * dlogax_da;
+
+    switch (mode) {
+      case VALUE:
+        return ans * ax;
+      case DERIVATIVE:
+        return ans * dax_da + dans_da * ax;
+      case SAMPLE_DERIVATIVE:
+      default: // this is needed to suppress clang warning
+        return -(dans_da + ans * dlogax_da) * x;
+    }
+  }
+};
+
+template <typename Scalar, IgammaComputationMode mode>
+struct igamma_series_impl {
+  /* Computes igam(a, x) or its derivative (depending on the mode)
+   * using the series expansion of the incomplete Gamma function.
+   *
+   * Preconditions:
+   *   x > 0
+   *   a > 0
+   *   !(x > 1 && x > a)
+   */
+  EIGEN_DEVICE_FUNC
+  static Scalar run(Scalar a, Scalar x) {
+    const Scalar zero = 0;
+    const Scalar one = 1;
+    const Scalar machep = cephes_helper<Scalar>::machep();
+
+    /* power series */
+    Scalar r = a;
+    Scalar c = one;
+    Scalar ans = one;
+
+    Scalar dc_da = zero;
+    Scalar dans_da = zero;
+
+    for (int i = 0; i < igamma_num_iterations<Scalar, mode>(); i++) {
+      r += one;
+      Scalar term = x / r;
+      Scalar dterm_da = -x / (r * r);
+      dc_da = term * dc_da + dterm_da * c;
+      dans_da += dc_da;
+      c *= term;
+      ans += c;
+
+      if (mode == VALUE) {
+        if (c <= machep * ans) {
+          break;
+        }
+      } else {
+        if (numext::abs(dc_da) <= machep * numext::abs(dans_da)) {
+          break;
+        }
+      }
+    }
+
+    /* Compute  x**a * exp(-x) / gamma(a + 1)  */
+    Scalar logax = a * numext::log(x) - x - lgamma_impl<Scalar>::run(a + one);
+    Scalar dlogax_da = numext::log(x) - digamma_impl<Scalar>::run(a + one);
+    Scalar ax = numext::exp(logax);
+    Scalar dax_da = ax * dlogax_da;
+
+    switch (mode) {
+      case VALUE:
+        return ans * ax;
+      case DERIVATIVE:
+        return ans * dax_da + dans_da * ax;
+      case SAMPLE_DERIVATIVE:
+      default: // this is needed to suppress clang warning
+        return -(dans_da + ans * dlogax_da) * x / a;
+    }
+  }
+};
+
 #if !EIGEN_HAS_C99_MATH
 
 template <typename Scalar>
@@ -465,8 +938,6 @@ struct igammac_impl {
 };
 
 #else
-
-template <typename Scalar> struct igamma_impl;  // predeclare igamma_impl
 
 template <typename Scalar>
 struct igammac_impl {
@@ -535,97 +1006,15 @@ struct igammac_impl {
       return nan;
     }
 
-    if ((numext::isnan)(a) || (numext::isnan)(x)) { // propagate nans
+    if ((numext::isnan)(a) || (numext::isnan)(x)) {  // propagate nans
       return nan;
     }
 
     if ((x < one) || (x < a)) {
-      /* The checks above ensure that we meet the preconditions for
-       * igamma_impl::Impl(), so call it, rather than igamma_impl::Run().
-       * Calling Run() would also work, but in that case the compiler may not be
-       * able to prove that igammac_impl::Run and igamma_impl::Run are not
-       * mutually recursive.  This leads to worse code, particularly on
-       * platforms like nvptx, where recursion is allowed only begrudgingly.
-       */
-      return (one - igamma_impl<Scalar>::Impl(a, x));
+      return (one - igamma_series_impl<Scalar, VALUE>::run(a, x));
     }
 
-    return Impl(a, x);
-  }
-
- private:
-  /* igamma_impl calls igammac_impl::Impl. */
-  friend struct igamma_impl<Scalar>;
-
-  /* Actually computes igamc(a, x).
-   *
-   * Preconditions:
-   *   a > 0
-   *   x >= 1
-   *   x >= a
-   */
-  EIGEN_DEVICE_FUNC static Scalar Impl(Scalar a, Scalar x) {
-    const Scalar zero = 0;
-    const Scalar one = 1;
-    const Scalar two = 2;
-    const Scalar machep = cephes_helper<Scalar>::machep();
-    const Scalar maxlog = numext::log(NumTraits<Scalar>::highest());
-    const Scalar big = cephes_helper<Scalar>::big();
-    const Scalar biginv = cephes_helper<Scalar>::biginv();
-    const Scalar inf = NumTraits<Scalar>::infinity();
-
-    Scalar ans, ax, c, yc, r, t, y, z;
-    Scalar pk, pkm1, pkm2, qk, qkm1, qkm2;
-
-    if (x == inf) return zero;  // std::isinf crashes on CUDA
-
-    /* Compute  x**a * exp(-x) / gamma(a)  */
-    ax = a * numext::log(x) - x - lgamma_impl<Scalar>::run(a);
-    if (ax < -maxlog) {  // underflow
-      return zero;
-    }
-    ax = numext::exp(ax);
-
-    // continued fraction
-    y = one - a;
-    z = x + y + one;
-    c = zero;
-    pkm2 = one;
-    qkm2 = x;
-    pkm1 = x + one;
-    qkm1 = z * x;
-    ans = pkm1 / qkm1;
-
-    for (int i = 0; i < 2000; i++) {
-      c += one;
-      y += one;
-      z += two;
-      yc = y * c;
-      pk = pkm1 * z - pkm2 * yc;
-      qk = qkm1 * z - qkm2 * yc;
-      if (qk != zero) {
-        r = pk / qk;
-        t = numext::abs((ans - r) / r);
-        ans = r;
-      } else {
-        t = one;
-      }
-      pkm2 = pkm1;
-      pkm1 = pk;
-      qkm2 = qkm1;
-      qkm1 = qk;
-      if (numext::abs(pk) > big) {
-        pkm2 *= biginv;
-        pkm1 *= biginv;
-        qkm2 *= biginv;
-        qkm1 *= biginv;
-      }
-      if (t <= machep) {
-        break;
-      }
-    }
-
-    return (ans * ax);
+    return igammac_cf_impl<Scalar, VALUE>::run(a, x);
   }
 };
 
@@ -635,15 +1024,10 @@ struct igammac_impl {
  * Implementation of igamma (incomplete gamma integral), based on Cephes but requires C++11/C99 *
  ************************************************************************************************/
 
-template <typename Scalar>
-struct igamma_retval {
-  typedef Scalar type;
-};
-
 #if !EIGEN_HAS_C99_MATH
 
-template <typename Scalar>
-struct igamma_impl {
+template <typename Scalar, IgammaComputationMode mode>
+struct igamma_generic_impl {
   EIGEN_DEVICE_FUNC
   static EIGEN_STRONG_INLINE Scalar run(Scalar a, Scalar x) {
     EIGEN_STATIC_ASSERT((internal::is_same<Scalar, Scalar>::value == false),
@@ -654,69 +1038,17 @@ struct igamma_impl {
 
 #else
 
-template <typename Scalar>
-struct igamma_impl {
+template <typename Scalar, IgammaComputationMode mode>
+struct igamma_generic_impl {
   EIGEN_DEVICE_FUNC
   static Scalar run(Scalar a, Scalar x) {
-    /*	igam()
-     *	Incomplete gamma integral
+    /* Depending on the mode, returns
+     * - VALUE: incomplete Gamma function igamma(a, x)
+     * - DERIVATIVE: derivative of incomplete Gamma function d/da igamma(a, x)
+     * - SAMPLE_DERIVATIVE: implicit derivative of a Gamma random variable
+     * x ~ Gamma(x | a, 1), dx/da = -1 / Gamma(x | a, 1) * d igamma(a, x) / dx
      *
-     *
-     *
-     * SYNOPSIS:
-     *
-     * double a, x, y, igam();
-     *
-     * y = igam( a, x );
-     *
-     * DESCRIPTION:
-     *
-     * The function is defined by
-     *
-     *                           x
-     *                            -
-     *                   1       | |  -t  a-1
-     *  igam(a,x)  =   -----     |   e   t   dt.
-     *                  -      | |
-     *                 | (a)    -
-     *                           0
-     *
-     *
-     * In this implementation both arguments must be positive.
-     * The integral is evaluated by either a power series or
-     * continued fraction expansion, depending on the relative
-     * values of a and x.
-     *
-     * ACCURACY (double):
-     *
-     *                      Relative error:
-     * arithmetic   domain     # trials      peak         rms
-     *    IEEE      0,30       200000       3.6e-14     2.9e-15
-     *    IEEE      0,100      300000       9.9e-14     1.5e-14
-     *
-     *
-     * ACCURACY (float):
-     *
-     *                      Relative error:
-     * arithmetic   domain     # trials      peak         rms
-     *    IEEE      0,30        20000       7.8e-6      5.9e-7
-     *
-     */
-    /*
-      Cephes Math Library Release 2.2: June, 1992
-      Copyright 1985, 1987, 1992 by Stephen L. Moshier
-      Direct inquiries to 30 Frost Street, Cambridge, MA 02140
-    */
-
-
-    /* left tail of incomplete gamma function:
-     *
-     *          inf.      k
-     *   a  -x   -       x
-     *  x  e     >   ----------
-     *           -     -
-     *          k=0   | (a+k+1)
-     *
+     * Derivatives are implemented by forward-mode differentiation.
      */
     const Scalar zero = 0;
     const Scalar one = 1;
@@ -728,70 +1060,166 @@ struct igamma_impl {
       return nan;
     }
 
-    if ((numext::isnan)(a) || (numext::isnan)(x)) { // propagate nans
+    if ((numext::isnan)(a) || (numext::isnan)(x)) {  // propagate nans
       return nan;
     }
 
     if ((x > one) && (x > a)) {
-      /* The checks above ensure that we meet the preconditions for
-       * igammac_impl::Impl(), so call it, rather than igammac_impl::Run().
-       * Calling Run() would also work, but in that case the compiler may not be
-       * able to prove that igammac_impl::Run and igamma_impl::Run are not
-       * mutually recursive.  This leads to worse code, particularly on
-       * platforms like nvptx, where recursion is allowed only begrudgingly.
-       */
-      return (one - igammac_impl<Scalar>::Impl(a, x));
-    }
-
-    return Impl(a, x);
-  }
-
- private:
-  /* igammac_impl calls igamma_impl::Impl. */
-  friend struct igammac_impl<Scalar>;
-
-  /* Actually computes igam(a, x).
-   *
-   * Preconditions:
-   *   x > 0
-   *   a > 0
-   *   !(x > 1 && x > a)
-   */
-  EIGEN_DEVICE_FUNC static Scalar Impl(Scalar a, Scalar x) {
-    const Scalar zero = 0;
-    const Scalar one = 1;
-    const Scalar machep = cephes_helper<Scalar>::machep();
-    const Scalar maxlog = numext::log(NumTraits<Scalar>::highest());
-
-    Scalar ans, ax, c, r;
-
-    /* Compute  x**a * exp(-x) / gamma(a)  */
-    ax = a * numext::log(x) - x - lgamma_impl<Scalar>::run(a);
-    if (ax < -maxlog) {
-      // underflow
-      return zero;
-    }
-    ax = numext::exp(ax);
-
-    /* power series */
-    r = a;
-    c = one;
-    ans = one;
-
-    for (int i = 0; i < 2000; i++) {
-      r += one;
-      c *= x/r;
-      ans += c;
-      if (c/ans <= machep) {
-        break;
+      Scalar ret = igammac_cf_impl<Scalar, mode>::run(a, x);
+      if (mode == VALUE) {
+        return one - ret;
+      } else {
+        return -ret;
       }
     }
 
-    return (ans * ax / a);
+    return igamma_series_impl<Scalar, mode>::run(a, x);
   }
 };
 
 #endif  // EIGEN_HAS_C99_MATH
+
+template <typename Scalar>
+struct igamma_retval {
+  typedef Scalar type;
+};
+
+template <typename Scalar>
+struct igamma_impl : igamma_generic_impl<Scalar, VALUE> {
+  /* igam()
+   * Incomplete gamma integral.
+   *
+   * The CDF of Gamma(a, 1) random variable at the point x.
+   *
+   * Accuracy estimation. For each a in [10^-2, 10^-1...10^3] we sample
+   * 50 Gamma random variables x ~ Gamma(x | a, 1), a total of 300 points.
+   * The ground truth is computed by mpmath. Mean absolute error:
+   * float: 1.26713e-05
+   * double: 2.33606e-12
+   *
+   * Cephes documentation below.
+   *
+   * SYNOPSIS:
+   *
+   * double a, x, y, igam();
+   *
+   * y = igam( a, x );
+   *
+   * DESCRIPTION:
+   *
+   * The function is defined by
+   *
+   *                           x
+   *                            -
+   *                   1       | |  -t  a-1
+   *  igam(a,x)  =   -----     |   e   t   dt.
+   *                  -      | |
+   *                 | (a)    -
+   *                           0
+   *
+   *
+   * In this implementation both arguments must be positive.
+   * The integral is evaluated by either a power series or
+   * continued fraction expansion, depending on the relative
+   * values of a and x.
+   *
+   * ACCURACY (double):
+   *
+   *                      Relative error:
+   * arithmetic   domain     # trials      peak         rms
+   *    IEEE      0,30       200000       3.6e-14     2.9e-15
+   *    IEEE      0,100      300000       9.9e-14     1.5e-14
+   *
+   *
+   * ACCURACY (float):
+   *
+   *                      Relative error:
+   * arithmetic   domain     # trials      peak         rms
+   *    IEEE      0,30        20000       7.8e-6      5.9e-7
+   *
+   */
+  /*
+    Cephes Math Library Release 2.2: June, 1992
+    Copyright 1985, 1987, 1992 by Stephen L. Moshier
+    Direct inquiries to 30 Frost Street, Cambridge, MA 02140
+  */
+
+  /* left tail of incomplete gamma function:
+   *
+   *          inf.      k
+   *   a  -x   -       x
+   *  x  e     >   ----------
+   *           -     -
+   *          k=0   | (a+k+1)
+   *
+   */
+};
+
+template <typename Scalar>
+struct igamma_der_a_retval : igamma_retval<Scalar> {};
+
+template <typename Scalar>
+struct igamma_der_a_impl : igamma_generic_impl<Scalar, DERIVATIVE> {
+  /* Derivative of the incomplete Gamma function with respect to a.
+   *
+   * Computes d/da igamma(a, x) by forward differentiation of the igamma code.
+   *
+   * Accuracy estimation. For each a in [10^-2, 10^-1...10^3] we sample
+   * 50 Gamma random variables x ~ Gamma(x | a, 1), a total of 300 points.
+   * The ground truth is computed by mpmath. Mean absolute error:
+   * float: 6.17992e-07
+   * double: 4.60453e-12
+   *
+   * Reference:
+   * R. Moore. "Algorithm AS 187: Derivatives of the incomplete gamma
+   * integral". Journal of the Royal Statistical Society. 1982
+   */
+};
+
+template <typename Scalar>
+struct gamma_sample_der_alpha_retval : igamma_retval<Scalar> {};
+
+template <typename Scalar>
+struct gamma_sample_der_alpha_impl
+    : igamma_generic_impl<Scalar, SAMPLE_DERIVATIVE> {
+  /* Derivative of a Gamma random variable sample with respect to alpha.
+   *
+   * Consider a sample of a Gamma random variable with the concentration
+   * parameter alpha: sample ~ Gamma(alpha, 1). The reparameterization
+   * derivative that we want to compute is dsample / dalpha =
+   * d igammainv(alpha, u) / dalpha, where u = igamma(alpha, sample).
+   * However, this formula is numerically unstable and expensive, so instead
+   * we use implicit differentiation:
+   *
+   * igamma(alpha, sample) = u, where u ~ Uniform(0, 1).
+   * Apply d / dalpha to both sides:
+   * d igamma(alpha, sample) / dalpha
+   *     + d igamma(alpha, sample) / dsample * dsample/dalpha  = 0
+   * d igamma(alpha, sample) / dalpha
+   *     + Gamma(sample | alpha, 1) dsample / dalpha = 0
+   * dsample/dalpha = - (d igamma(alpha, sample) / dalpha)
+   *                   / Gamma(sample | alpha, 1)
+   *
+   * Here Gamma(sample | alpha, 1) is the PDF of the Gamma distribution
+   * (note that the derivative of the CDF w.r.t. sample is the PDF).
+   * See the reference below for more details.
+   *
+   * The derivative of igamma(alpha, sample) is computed by forward
+   * differentiation of the igamma code. Division by the Gamma PDF is performed
+   * in the same code, increasing the accuracy and speed due to cancellation
+   * of some terms.
+   *
+   * Accuracy estimation. For each alpha in [10^-2, 10^-1...10^3] we sample
+   * 50 Gamma random variables sample ~ Gamma(sample | alpha, 1), a total of 300
+   * points. The ground truth is computed by mpmath. Mean absolute error:
+   * float: 2.1686e-06
+   * double: 1.4774e-12
+   *
+   * Reference:
+   * M. Figurnov, S. Mohamed, A. Mnih "Implicit Reparameterization Gradients".
+   * 2018
+   */
+};
 
 /*****************************************************************************
  * Implementation of Riemann zeta function of two arguments, based on Cephes *
@@ -1507,6 +1935,334 @@ struct betainc_impl<double> {
 
 #endif  // EIGEN_HAS_C99_MATH
 
+/****************************************************************************
+ * Implementation of Bessel function, based on Cephes                       *
+ ****************************************************************************/
+
+template <typename Scalar>
+struct i0e_retval {
+  typedef Scalar type;
+};
+
+template <typename Scalar>
+struct i0e_impl {
+  EIGEN_DEVICE_FUNC
+  static EIGEN_STRONG_INLINE Scalar run(const Scalar) {
+    EIGEN_STATIC_ASSERT((internal::is_same<Scalar, Scalar>::value == false),
+                        THIS_TYPE_IS_NOT_SUPPORTED);
+    return Scalar(0);
+  }
+};
+
+template <>
+struct i0e_impl<float> {
+  EIGEN_DEVICE_FUNC
+  static EIGEN_STRONG_INLINE float run(float x) {
+    /*  i0ef.c
+     *
+     *  Modified Bessel function of order zero,
+     *  exponentially scaled
+     *
+     *
+     *
+     * SYNOPSIS:
+     *
+     * float x, y, i0ef();
+     *
+     * y = i0ef( x );
+     *
+     *
+     *
+     * DESCRIPTION:
+     *
+     * Returns exponentially scaled modified Bessel function
+     * of order zero of the argument.
+     *
+     * The function is defined as i0e(x) = exp(-|x|) j0( ix ).
+     *
+     *
+     *
+     * ACCURACY:
+     *
+     *                      Relative error:
+     * arithmetic   domain     # trials      peak         rms
+     *    IEEE      0,30        100000      3.7e-7      7.0e-8
+     * See i0f().
+     *
+     */
+    const float A[] = {-1.30002500998624804212E-8f, 6.04699502254191894932E-8f,
+                       -2.67079385394061173391E-7f, 1.11738753912010371815E-6f,
+                       -4.41673835845875056359E-6f, 1.64484480707288970893E-5f,
+                       -5.75419501008210370398E-5f, 1.88502885095841655729E-4f,
+                       -5.76375574538582365885E-4f, 1.63947561694133579842E-3f,
+                       -4.32430999505057594430E-3f, 1.05464603945949983183E-2f,
+                       -2.37374148058994688156E-2f, 4.93052842396707084878E-2f,
+                       -9.49010970480476444210E-2f, 1.71620901522208775349E-1f,
+                       -3.04682672343198398683E-1f, 6.76795274409476084995E-1f};
+
+    const float B[] = {3.39623202570838634515E-9f, 2.26666899049817806459E-8f,
+                       2.04891858946906374183E-7f, 2.89137052083475648297E-6f,
+                       6.88975834691682398426E-5f, 3.36911647825569408990E-3f,
+                       8.04490411014108831608E-1f};
+    if (x < 0.0f) {
+      x = -x;
+    }
+
+    if (x <= 8.0f) {
+      float y = 0.5f * x - 2.0f;
+      return cephes::chebevl<float, 18>::run(y, A);
+    }
+
+    return cephes::chebevl<float, 7>::run(32.0f / x - 2.0f, B) / numext::sqrt(x);
+  }
+};
+
+template <>
+struct i0e_impl<double> {
+  EIGEN_DEVICE_FUNC
+  static EIGEN_STRONG_INLINE double run(double x) {
+    /*  i0e.c
+     *
+     *  Modified Bessel function of order zero,
+     *  exponentially scaled
+     *
+     *
+     *
+     * SYNOPSIS:
+     *
+     * double x, y, i0e();
+     *
+     * y = i0e( x );
+     *
+     *
+     *
+     * DESCRIPTION:
+     *
+     * Returns exponentially scaled modified Bessel function
+     * of order zero of the argument.
+     *
+     * The function is defined as i0e(x) = exp(-|x|) j0( ix ).
+     *
+     *
+     *
+     * ACCURACY:
+     *
+     *                      Relative error:
+     * arithmetic   domain     # trials      peak         rms
+     *    IEEE      0,30        30000       5.4e-16     1.2e-16
+     * See i0().
+     *
+     */
+    const double A[] = {-4.41534164647933937950E-18, 3.33079451882223809783E-17,
+                        -2.43127984654795469359E-16, 1.71539128555513303061E-15,
+                        -1.16853328779934516808E-14, 7.67618549860493561688E-14,
+                        -4.85644678311192946090E-13, 2.95505266312963983461E-12,
+                        -1.72682629144155570723E-11, 9.67580903537323691224E-11,
+                        -5.18979560163526290666E-10, 2.65982372468238665035E-9,
+                        -1.30002500998624804212E-8,  6.04699502254191894932E-8,
+                        -2.67079385394061173391E-7,  1.11738753912010371815E-6,
+                        -4.41673835845875056359E-6,  1.64484480707288970893E-5,
+                        -5.75419501008210370398E-5,  1.88502885095841655729E-4,
+                        -5.76375574538582365885E-4,  1.63947561694133579842E-3,
+                        -4.32430999505057594430E-3,  1.05464603945949983183E-2,
+                        -2.37374148058994688156E-2,  4.93052842396707084878E-2,
+                        -9.49010970480476444210E-2,  1.71620901522208775349E-1,
+                        -3.04682672343198398683E-1,  6.76795274409476084995E-1};
+    const double B[] = {
+        -7.23318048787475395456E-18, -4.83050448594418207126E-18,
+        4.46562142029675999901E-17,  3.46122286769746109310E-17,
+        -2.82762398051658348494E-16, -3.42548561967721913462E-16,
+        1.77256013305652638360E-15,  3.81168066935262242075E-15,
+        -9.55484669882830764870E-15, -4.15056934728722208663E-14,
+        1.54008621752140982691E-14,  3.85277838274214270114E-13,
+        7.18012445138366623367E-13,  -1.79417853150680611778E-12,
+        -1.32158118404477131188E-11, -3.14991652796324136454E-11,
+        1.18891471078464383424E-11,  4.94060238822496958910E-10,
+        3.39623202570838634515E-9,   2.26666899049817806459E-8,
+        2.04891858946906374183E-7,   2.89137052083475648297E-6,
+        6.88975834691682398426E-5,   3.36911647825569408990E-3,
+        8.04490411014108831608E-1};
+
+    if (x < 0.0) {
+      x = -x;
+    }
+
+    if (x <= 8.0) {
+      double y = (x / 2.0) - 2.0;
+      return cephes::chebevl<double, 30>::run(y, A);
+    }
+
+    return cephes::chebevl<double, 25>::run(32.0 / x - 2.0, B) /
+           numext::sqrt(x);
+  }
+};
+
+template <typename Scalar>
+struct i1e_retval {
+  typedef Scalar type;
+};
+
+template <typename Scalar>
+struct i1e_impl {
+  EIGEN_DEVICE_FUNC
+  static EIGEN_STRONG_INLINE Scalar run(const Scalar) {
+    EIGEN_STATIC_ASSERT((internal::is_same<Scalar, Scalar>::value == false),
+                        THIS_TYPE_IS_NOT_SUPPORTED);
+    return Scalar(0);
+  }
+};
+
+template <>
+struct i1e_impl<float> {
+  EIGEN_DEVICE_FUNC
+  static EIGEN_STRONG_INLINE float run(float x) {
+    /* i1ef.c
+     *
+     *  Modified Bessel function of order one,
+     *  exponentially scaled
+     *
+     *
+     *
+     * SYNOPSIS:
+     *
+     * float x, y, i1ef();
+     *
+     * y = i1ef( x );
+     *
+     *
+     *
+     * DESCRIPTION:
+     *
+     * Returns exponentially scaled modified Bessel function
+     * of order one of the argument.
+     *
+     * The function is defined as i1(x) = -i exp(-|x|) j1( ix ).
+     *
+     *
+     *
+     * ACCURACY:
+     *
+     *                      Relative error:
+     * arithmetic   domain     # trials      peak         rms
+     *    IEEE      0, 30       30000       1.5e-6      1.5e-7
+     * See i1().
+     *
+     */
+    const float A[] = {9.38153738649577178388E-9f, -4.44505912879632808065E-8f,
+                       2.00329475355213526229E-7f, -8.56872026469545474066E-7f,
+                       3.47025130813767847674E-6f, -1.32731636560394358279E-5f,
+                       4.78156510755005422638E-5f, -1.61760815825896745588E-4f,
+                       5.12285956168575772895E-4f, -1.51357245063125314899E-3f,
+                       4.15642294431288815669E-3f, -1.05640848946261981558E-2f,
+                       2.47264490306265168283E-2f, -5.29459812080949914269E-2f,
+                       1.02643658689847095384E-1f, -1.76416518357834055153E-1f,
+                       2.52587186443633654823E-1f};
+
+    const float B[] = {-3.83538038596423702205E-9f, -2.63146884688951950684E-8f,
+                       -2.51223623787020892529E-7f, -3.88256480887769039346E-6f,
+                       -1.10588938762623716291E-4f, -9.76109749136146840777E-3f,
+                       7.78576235018280120474E-1f};
+
+    float z = numext::abs(x);
+
+    if (z <= 8.0f) {
+      float y = 0.5f * z - 2.0f;
+      z = cephes::chebevl<float, 17>::run(y, A) * z;
+    } else {
+      z = cephes::chebevl<float, 7>::run(32.0f / z - 2.0f, B) / numext::sqrt(z);
+    }
+
+    if (x < 0.0f) {
+      z = -z;
+    }
+
+    return z;
+  }
+};
+
+template <>
+struct i1e_impl<double> {
+  EIGEN_DEVICE_FUNC
+  static EIGEN_STRONG_INLINE double run(double x) {
+    /*  i1e.c
+     *
+     *  Modified Bessel function of order one,
+     *  exponentially scaled
+     *
+     *
+     *
+     * SYNOPSIS:
+     *
+     * double x, y, i1e();
+     *
+     * y = i1e( x );
+     *
+     *
+     *
+     * DESCRIPTION:
+     *
+     * Returns exponentially scaled modified Bessel function
+     * of order one of the argument.
+     *
+     * The function is defined as i1(x) = -i exp(-|x|) j1( ix ).
+     *
+     *
+     *
+     * ACCURACY:
+     *
+     *                      Relative error:
+     * arithmetic   domain     # trials      peak         rms
+     *    IEEE      0, 30       30000       2.0e-15     2.0e-16
+     * See i1().
+     *
+     */
+    const double A[] = {2.77791411276104639959E-18, -2.11142121435816608115E-17,
+                        1.55363195773620046921E-16, -1.10559694773538630805E-15,
+                        7.60068429473540693410E-15, -5.04218550472791168711E-14,
+                        3.22379336594557470981E-13, -1.98397439776494371520E-12,
+                        1.17361862988909016308E-11, -6.66348972350202774223E-11,
+                        3.62559028155211703701E-10, -1.88724975172282928790E-9,
+                        9.38153738649577178388E-9,  -4.44505912879632808065E-8,
+                        2.00329475355213526229E-7,  -8.56872026469545474066E-7,
+                        3.47025130813767847674E-6,  -1.32731636560394358279E-5,
+                        4.78156510755005422638E-5,  -1.61760815825896745588E-4,
+                        5.12285956168575772895E-4,  -1.51357245063125314899E-3,
+                        4.15642294431288815669E-3,  -1.05640848946261981558E-2,
+                        2.47264490306265168283E-2,  -5.29459812080949914269E-2,
+                        1.02643658689847095384E-1,  -1.76416518357834055153E-1,
+                        2.52587186443633654823E-1};
+    const double B[] = {
+        7.51729631084210481353E-18,  4.41434832307170791151E-18,
+        -4.65030536848935832153E-17, -3.20952592199342395980E-17,
+        2.96262899764595013876E-16,  3.30820231092092828324E-16,
+        -1.88035477551078244854E-15, -3.81440307243700780478E-15,
+        1.04202769841288027642E-14,  4.27244001671195135429E-14,
+        -2.10154184277266431302E-14, -4.08355111109219731823E-13,
+        -7.19855177624590851209E-13, 2.03562854414708950722E-12,
+        1.41258074366137813316E-11,  3.25260358301548823856E-11,
+        -1.89749581235054123450E-11, -5.58974346219658380687E-10,
+        -3.83538038596423702205E-9,  -2.63146884688951950684E-8,
+        -2.51223623787020892529E-7,  -3.88256480887769039346E-6,
+        -1.10588938762623716291E-4,  -9.76109749136146840777E-3,
+        7.78576235018280120474E-1};
+
+    double z = numext::abs(x);
+
+    if (z <= 8.0) {
+      double y = (z / 2.0) - 2.0;
+      z = cephes::chebevl<double, 29>::run(y, A) * z;
+    } else {
+      z = cephes::chebevl<double, 25>::run(32.0 / z - 2.0, B) / numext::sqrt(z);
+    }
+
+    if (x < 0.0) {
+      z = -z;
+    }
+
+    return z;
+  }
+};
+
 }  // end namespace internal
 
 namespace numext {
@@ -1548,9 +2304,27 @@ EIGEN_DEVICE_FUNC inline EIGEN_MATHFUNC_RETVAL(erfc, Scalar)
 }
 
 template <typename Scalar>
+EIGEN_DEVICE_FUNC inline EIGEN_MATHFUNC_RETVAL(ndtri, Scalar)
+    ndtri(const Scalar& x) {
+  return EIGEN_MATHFUNC_IMPL(ndtri, Scalar)::run(x);
+}
+
+template <typename Scalar>
 EIGEN_DEVICE_FUNC inline EIGEN_MATHFUNC_RETVAL(igamma, Scalar)
     igamma(const Scalar& a, const Scalar& x) {
   return EIGEN_MATHFUNC_IMPL(igamma, Scalar)::run(a, x);
+}
+
+template <typename Scalar>
+EIGEN_DEVICE_FUNC inline EIGEN_MATHFUNC_RETVAL(igamma_der_a, Scalar)
+    igamma_der_a(const Scalar& a, const Scalar& x) {
+  return EIGEN_MATHFUNC_IMPL(igamma_der_a, Scalar)::run(a, x);
+}
+
+template <typename Scalar>
+EIGEN_DEVICE_FUNC inline EIGEN_MATHFUNC_RETVAL(gamma_sample_der_alpha, Scalar)
+    gamma_sample_der_alpha(const Scalar& a, const Scalar& x) {
+  return EIGEN_MATHFUNC_IMPL(gamma_sample_der_alpha, Scalar)::run(a, x);
 }
 
 template <typename Scalar>
@@ -1563,6 +2337,18 @@ template <typename Scalar>
 EIGEN_DEVICE_FUNC inline EIGEN_MATHFUNC_RETVAL(betainc, Scalar)
     betainc(const Scalar& a, const Scalar& b, const Scalar& x) {
   return EIGEN_MATHFUNC_IMPL(betainc, Scalar)::run(a, b, x);
+}
+
+template <typename Scalar>
+EIGEN_DEVICE_FUNC inline EIGEN_MATHFUNC_RETVAL(i0e, Scalar)
+    i0e(const Scalar& x) {
+  return EIGEN_MATHFUNC_IMPL(i0e, Scalar)::run(x);
+}
+
+template <typename Scalar>
+EIGEN_DEVICE_FUNC inline EIGEN_MATHFUNC_RETVAL(i1e, Scalar)
+    i1e(const Scalar& x) {
+  return EIGEN_MATHFUNC_IMPL(i1e, Scalar)::run(x);
 }
 
 }  // end namespace numext

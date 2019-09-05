@@ -1,16 +1,7 @@
-# generate split test header file only if it does not yet exist
-# in order to prevent a rebuild everytime cmake is configured
-if(NOT EXISTS ${CMAKE_CURRENT_BINARY_DIR}/split_test_helper.h)
-  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/split_test_helper.h "")
-  foreach(i RANGE 1 999)
-    file(APPEND ${CMAKE_CURRENT_BINARY_DIR}/split_test_helper.h
-      "#ifdef EIGEN_TEST_PART_${i}\n"
-      "#define CALL_SUBTEST_${i}(FUNC) CALL_SUBTEST(FUNC)\n"
-      "#else\n"
-      "#define CALL_SUBTEST_${i}(FUNC)\n"
-      "#endif\n\n"
-    )
-  endforeach()
+# The file split_test_helper.h was generated at first run,
+# it is now included in test/
+if(EXISTS ${CMAKE_CURRENT_BINARY_DIR}/split_test_helper.h)
+  file(REMOVE ${CMAKE_CURRENT_BINARY_DIR}/split_test_helper.h)
 endif()
 
 set_property(GLOBAL PROPERTY EIGEN_CURRENT_SUBPROJECT "Unsupported")
@@ -20,17 +11,6 @@ include_directories(../../test ../../unsupported ../../Eigen
                     ${CMAKE_CURRENT_BINARY_DIR}/../../test)
 
 find_package (Threads)
-
-find_package(Xsmm)
-if(XSMM_FOUND)
-  add_definitions("-DEIGEN_USE_LIBXSMM")
-  include_directories(${XSMM_INCLUDES})
-  link_directories(${XSMM_LIBRARIES})
-  set(EXTERNAL_LIBS ${EXTERNAL_LIBS} xsmm)
-  ei_add_property(EIGEN_TESTED_BACKENDS  "Xsmm, ")
-else(XSMM_FOUND)
-  ei_add_property(EIGEN_MISSING_BACKENDS  "Xsmm, ")
-endif(XSMM_FOUND)
 
 find_package(GoogleHash)
 if(GOOGLEHASH_FOUND)
@@ -63,9 +43,7 @@ ei_add_test(NumericalDiff)
 ei_add_test(autodiff_scalar)
 ei_add_test(autodiff)
 
-if (NOT CMAKE_CXX_COMPILER MATCHES "clang\\+\\+$")
 ei_add_test(BVH)
-endif()
 
 ei_add_test(matrix_exponential)
 ei_add_test(matrix_function)
@@ -79,7 +57,7 @@ ei_add_test(EulerAngles)
 
 find_package(MPFR 2.3.0)
 find_package(GMP)
-if(MPFR_FOUND AND EIGEN_COMPILER_SUPPORT_CXX11)
+if(MPFR_FOUND AND EIGEN_COMPILER_SUPPORT_CPP11)
   include_directories(${MPFR_INCLUDES} ./mpreal)
   ei_add_property(EIGEN_TESTED_BACKENDS "MPFR C++, ")
   set(EIGEN_MPFR_TEST_LIBRARIES ${MPFR_LIBRARIES} ${GMP_LIBRARIES})
@@ -124,6 +102,7 @@ ei_add_test(polynomialsolver)
 ei_add_test(polynomialutils)
 ei_add_test(splines)
 ei_add_test(gmres)
+ei_add_test(dgmres)
 ei_add_test(minres)
 ei_add_test(levenberg_marquardt)
 ei_add_test(kronecker_product)
@@ -138,6 +117,7 @@ if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 ei_add_test(cxx11_tensor_dimension)
 ei_add_test(cxx11_tensor_map)
 ei_add_test(cxx11_tensor_assign)
+ei_add_test(cxx11_tensor_block_access)
 ei_add_test(cxx11_tensor_comparisons)
 ei_add_test(cxx11_tensor_forced_eval)
 ei_add_test(cxx11_tensor_math)
@@ -149,10 +129,7 @@ ei_add_test(cxx11_tensor_sugar)
 ei_add_test(cxx11_tensor_roundings)
 ei_add_test(cxx11_tensor_layout_swap)
 ei_add_test(cxx11_tensor_io)
-if("${CMAKE_SIZEOF_VOID_P}" EQUAL "8")
-  # This test requires __uint128_t which is only available on 64bit systems
-  ei_add_test(cxx11_tensor_uint128)
-endif()
+ei_add_test(cxx11_maxsizevector)
 endif()
 
 if(EIGEN_TEST_CXX11)
@@ -163,8 +140,9 @@ if(EIGEN_TEST_CXX11)
     else(EIGEN_SYCL_TRISYCL)
       # It should be safe to always run these tests as there is some fallback code for
       # older compiler that don't support cxx11.
-      set(CMAKE_CXX_STANDARD 11)
-      set(STD_CXX_FLAG "-std=c++11")
+      # This is already set if EIGEN_TEST_CXX11 is enabled:
+      # set(CMAKE_CXX_STANDARD 11)
+      # set(STD_CXX_FLAG "-std=c++11")
     endif(EIGEN_SYCL_TRISYCL)
 
     ei_add_test_sycl(cxx11_tensor_sycl ${STD_CXX_FLAG})
@@ -224,6 +202,7 @@ if(EIGEN_TEST_CXX11)
   ei_add_test(cxx11_tensor_striding)
   ei_add_test(cxx11_tensor_notification "-pthread" "${CMAKE_THREAD_LIBS_INIT}")
   ei_add_test(cxx11_tensor_thread_pool "-pthread" "${CMAKE_THREAD_LIBS_INIT}")
+  ei_add_test(cxx11_tensor_executor "-pthread" "${CMAKE_THREAD_LIBS_INIT}")
   ei_add_test(cxx11_tensor_ref)
   ei_add_test(cxx11_tensor_random)
   ei_add_test(cxx11_tensor_generator)
@@ -233,6 +212,11 @@ if(EIGEN_TEST_CXX11)
   ei_add_test(cxx11_tensor_ifft)
   ei_add_test(cxx11_tensor_scan)
   ei_add_test(cxx11_tensor_trace)
+  ei_add_test(cxx11_tensor_move)
+if("${CMAKE_SIZEOF_VOID_P}" EQUAL "8" AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  # This test requires __uint128_t which is only available on 64bit systems
+  ei_add_test(cxx11_tensor_uint128)
+endif()
 
 endif()
 
@@ -255,7 +239,11 @@ if(CUDA_FOUND AND EIGEN_TEST_CUDA)
     set(CUDA_NVCC_FLAGS "-ccbin ${CMAKE_C_COMPILER}" CACHE STRING "nvcc flags" FORCE)
   endif()
   if(EIGEN_TEST_CUDA_CLANG)
-   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 --cuda-gpu-arch=sm_${EIGEN_CUDA_COMPUTE_ARCH}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+    string(APPEND CMAKE_CXX_FLAGS " --cuda-path=${CUDA_TOOLKIT_ROOT_DIR}")
+    foreach(ARCH IN LISTS EIGEN_CUDA_COMPUTE_ARCH)
+        string(APPEND CMAKE_CXX_FLAGS " --cuda-gpu-arch=sm_${ARCH}")
+    endforeach()
   endif()
 
   set(EIGEN_CUDA_RELAXED_CONSTEXPR "--expt-relaxed-constexpr")
@@ -263,37 +251,105 @@ if(CUDA_FOUND AND EIGEN_TEST_CUDA)
     set(EIGEN_CUDA_RELAXED_CONSTEXPR "--relaxed-constexpr")
   endif()
 
-  if( (NOT EIGEN_TEST_CXX11) OR (CMAKE_VERSION VERSION_LESS 3.3))
+  if(( (NOT EIGEN_TEST_CXX11) OR (CMAKE_VERSION VERSION_LESS 3.3)) AND EIGEN_TEST_CXX11)
     set(EIGEN_CUDA_CXX11_FLAG "-std=c++11")
   else()
     # otherwise the flag has already been added because of the above set(CMAKE_CXX_STANDARD 11)
     set(EIGEN_CUDA_CXX11_FLAG "")
   endif()
 
-  set(CUDA_NVCC_FLAGS  "${EIGEN_CUDA_CXX11_FLAG} ${EIGEN_CUDA_RELAXED_CONSTEXPR} -arch compute_${EIGEN_CUDA_COMPUTE_ARCH} -Xcudafe \"--display_error_number\" ${CUDA_NVCC_FLAGS}")
+  set(NVCC_ARCH_FLAGS)
+  foreach(ARCH IN LISTS EIGEN_CUDA_COMPUTE_ARCH)
+    string(APPEND NVCC_ARCH_FLAGS " -gencode arch=compute_${ARCH},code=sm_${ARCH}")
+  endforeach()
+  set(CUDA_NVCC_FLAGS  "${EIGEN_CUDA_CXX11_FLAG} ${EIGEN_CUDA_RELAXED_CONSTEXPR} -Xcudafe \"--display_error_number\" ${NVCC_ARCH_FLAGS} ${CUDA_NVCC_FLAGS}")
   cuda_include_directories("${CMAKE_CURRENT_BINARY_DIR}" "${CUDA_TOOLKIT_ROOT_DIR}/include")
   set(EIGEN_ADD_TEST_FILENAME_EXTENSION "cu")
 
-  ei_add_test(cxx11_tensor_complex_cuda)
-  ei_add_test(cxx11_tensor_complex_cwise_ops_cuda)
-  ei_add_test(cxx11_tensor_reduction_cuda)
-  ei_add_test(cxx11_tensor_argmax_cuda)
-  ei_add_test(cxx11_tensor_cast_float16_cuda)
-  ei_add_test(cxx11_tensor_scan_cuda)
+  ei_add_test(cxx11_tensor_complex_gpu)
+  ei_add_test(cxx11_tensor_complex_cwise_ops_gpu)
+  ei_add_test(cxx11_tensor_reduction_gpu)
+  ei_add_test(cxx11_tensor_argmax_gpu)
+  ei_add_test(cxx11_tensor_cast_float16_gpu)
+  ei_add_test(cxx11_tensor_scan_gpu)
+
+  set(EIGEN_CUDA_OLDEST_COMPUTE_ARCH 9999)
+  foreach(ARCH IN LISTS EIGEN_CUDA_COMPUTE_ARCH)
+    if(${ARCH} LESS ${EIGEN_CUDA_OLDEST_COMPUTE_ARCH})
+      set(EIGEN_CUDA_OLDEST_COMPUTE_ARCH ${ARCH})
+    endif()
+  endforeach()
 
   # Contractions require arch 3.0 or higher
-  if (${EIGEN_CUDA_COMPUTE_ARCH} GREATER 29)
+  if (${EIGEN_CUDA_OLDEST_COMPUTE_ARCH} GREATER 29)
     ei_add_test(cxx11_tensor_device)
-    ei_add_test(cxx11_tensor_cuda)
-    ei_add_test(cxx11_tensor_contract_cuda)
-    ei_add_test(cxx11_tensor_of_float16_cuda)
+    ei_add_test(cxx11_tensor_gpu)
+    ei_add_test(cxx11_tensor_contract_gpu)
+    ei_add_test(cxx11_tensor_of_float16_gpu)
   endif()
 
   # The random number generation code requires arch 3.5 or greater.
-  if (${EIGEN_CUDA_COMPUTE_ARCH} GREATER 34)
-    ei_add_test(cxx11_tensor_random_cuda)
+  if (${EIGEN_CUDA_OLDEST_COMPUTE_ARCH} GREATER 34)
+    ei_add_test(cxx11_tensor_random_gpu)
   endif()
 
 
   unset(EIGEN_ADD_TEST_FILENAME_EXTENSION)
 endif()
+
+# Add HIP specific tests
+if (EIGEN_TEST_HIP)
+
+  set(HIP_PATH "/opt/rocm/hip" CACHE STRING "Path to the HIP installation.")
+
+  if (EXISTS ${HIP_PATH})
+
+    list(APPEND CMAKE_MODULE_PATH ${HIP_PATH}/cmake)
+
+    find_package(HIP REQUIRED)
+    if (HIP_FOUND)
+
+      execute_process(COMMAND ${HIP_PATH}/bin/hipconfig --platform OUTPUT_VARIABLE HIP_PLATFORM)
+
+      if (${HIP_PLATFORM} STREQUAL "hcc")
+
+	include_directories(${CMAKE_CURRENT_BINARY_DIR})
+	include_directories(${HIP_PATH}/include)
+
+	set(EIGEN_ADD_TEST_FILENAME_EXTENSION  "cu")
+	#
+	# complex datatype is not yet supported by HIP
+	# so leaving out those tests for now
+	#
+	# ei_add_test(cxx11_tensor_complex_gpu)
+	# ei_add_test(cxx11_tensor_complex_cwise_ops_gpu)
+	#
+	ei_add_test(cxx11_tensor_reduction_gpu)
+	ei_add_test(cxx11_tensor_argmax_gpu)
+	ei_add_test(cxx11_tensor_cast_float16_gpu)
+	ei_add_test(cxx11_tensor_scan_gpu)
+	ei_add_test(cxx11_tensor_device)
+
+	ei_add_test(cxx11_tensor_gpu)
+	ei_add_test(cxx11_tensor_contract_gpu)
+	ei_add_test(cxx11_tensor_of_float16_gpu)
+	ei_add_test(cxx11_tensor_random_gpu)
+
+	unset(EIGEN_ADD_TEST_FILENAME_EXTENSION)
+
+      elseif (${HIP_PLATFORM} STREQUAL "nvcc")
+	message(FATAL_ERROR "HIP_PLATFORM = nvcc is not supported within Eigen")
+      else ()
+	message(FATAL_ERROR "Unknown HIP_PLATFORM = ${HIP_PLATFORM}")
+      endif()
+
+    endif(HIP_FOUND)
+
+  else ()
+
+    message(FATAL_ERROR "EIGEN_TEST_HIP is ON, but the specified HIP_PATH (${HIP_PATH}) does not exist")
+
+  endif()
+
+endif(EIGEN_TEST_HIP)
+
